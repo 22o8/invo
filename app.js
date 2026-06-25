@@ -221,6 +221,7 @@ function templatesHTML(selected, group='template'){
       <span class="badge b-${key}">${meta.badge}</span>
       <div class="thumb ${key}">
         <div class="thumb-title">فاتورة</div>
+        <div class="thumb-sub">INVOICE</div>
         <div class="thumb-line"></div>
         <div class="thumb-row">إلى: العميل</div>
         <div class="thumb-row">مجموع الحساب الكلي</div>
@@ -536,6 +537,7 @@ function invoiceHTML(rawDoc){
           </div>
           <div class="invoice-title-box">
             <div class="invoice-title-main">${esc(d.title || 'فاتورة')}</div>
+            <div class="invoice-title-en">INVOICE</div>
           </div>
           <div class="meta-card">
             <div class="meta-row"><b>إلى:</b><span>${esc(d.to || '-')}</span></div>
@@ -569,6 +571,58 @@ function summaryBox(title, value, icon){
   return `<div class="summary-box"><div><h3>${title}</h3><strong>${value || '<span class="empty-amount">لا توجد عملة مفعّلة</span>'}</strong></div><div class="summary-icon">${icon}</div></div>`;
 }
 
+function openPrintInCurrentPage(doc){
+  const d = normalizeDoc(doc);
+  const previousTitle = document.title;
+  const previousScroll = window.scrollY || document.documentElement.scrollTop || 0;
+  let cleaned = false;
+  let printStarted = false;
+  let safetyTimer = null;
+
+  function cleanup(){
+    if(cleaned) return;
+    cleaned = true;
+    document.title = previousTitle;
+    document.body.classList.remove('print-active');
+    if(printMount) printMount.innerHTML = '';
+    window.removeEventListener('afterprint', cleanup);
+    window.removeEventListener('focus', focusCleanup);
+    document.removeEventListener('visibilitychange', visibilityCleanup);
+    if(safetyTimer) clearTimeout(safetyTimer);
+    setTimeout(() => window.scrollTo(0, previousScroll), 50);
+  }
+
+  function focusCleanup(){
+    if(printStarted) setTimeout(cleanup, 350);
+  }
+
+  function visibilityCleanup(){
+    if(printStarted && !document.hidden) setTimeout(cleanup, 350);
+  }
+
+  document.title = safeFileName(d.docNo || 'invoice');
+  printMount.innerHTML = invoiceHTML(d);
+  document.body.classList.add('print-active');
+  window.addEventListener('afterprint', cleanup, { once:true });
+  window.addEventListener('focus', focusCleanup);
+  document.addEventListener('visibilitychange', visibilityCleanup);
+
+  // على الهاتف وداخل PWA فتح نافذة جديدة يسبب شاشة بيضاء أحياناً، لذلك نطبع من نفس الصفحة.
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      printStarted = true;
+      try{
+        window.print();
+      }catch(e){
+        cleanup();
+        alert('تعذر فتح نافذة PDF من هذا المتصفح. افتح الموقع من Chrome ثم جرّب مرة ثانية.');
+        return;
+      }
+      safetyTimer = setTimeout(cleanup, 12000);
+    }, 180);
+  });
+}
+
 window.printPDF = function(doc){
   let d;
   if(doc){
@@ -579,26 +633,9 @@ window.printPDF = function(doc){
     d = normalizeDoc(getActiveDoc() || initDraft());
   }
   state.selected = d;
-  const css = collectCss();
-  const base = `<base href="${location.href.replace(/[^/]*$/, '')}">`;
-  const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${base}<title>${esc(d.docNo || 'invoice')}</title><link rel="stylesheet" href="styles.css"><style>${css}</style><style>body{background:#fff!important}.print-help{display:none!important}</style></head><body><div id="printMount">${invoiceHTML(d)}</div><script>window.onload=function(){setTimeout(function(){window.focus();window.print();},250)};<\/script></body></html>`;
 
-  // نفتح نافذة طباعة مستقلة حتى يشتغل PDF بشكل ثابت على المتصفح والموبايل.
-  const win = window.open('', '_blank', 'width=980,height=900');
-  if(win){
-    try{ win.opener = null; }catch(e){}
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
-    return;
-  }
-
-  // بديل إذا كان فتح النوافذ محظور.
-  printMount.innerHTML = invoiceHTML(d);
-  setTimeout(() => {
-    window.print();
-    setTimeout(() => { printMount.innerHTML = ''; }, 800);
-  }, 120);
+  // حل نهائي للهاتف: لا نستخدم window.open حتى لا تظهر الشاشة البيضاء داخل التطبيق.
+  openPrintInCurrentPage(d);
 };
 
 window.exportWord = function(id){

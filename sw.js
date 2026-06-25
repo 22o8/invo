@@ -1,4 +1,4 @@
-const CACHE='invoice-pwa-v7-final-ready';
+const CACHE='invoice-pwa-v8-mobile-pdf-fix';
 const ASSETS=['./','./index.html','./styles.css','./app.js','./manifest.json','./icon.svg'];
 self.addEventListener('install',event=>{
   event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)));
