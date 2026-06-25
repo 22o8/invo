@@ -198,7 +198,7 @@ function home(){
       </section>
       <section class="card">
         <h3>ملاحظة PDF مهمة</h3>
-        <div class="notice">عند الحفظ PDF من نافذة الطباعة، عطّل خيار <b>Headers and footers</b> حتى لا يظهر التاريخ أو رابط الملف بأسفل الورقة.</div>
+        <div class="notice">تم تعديل التصدير ليُنزّل ملف PDF مباشر بدون فتح شاشة الطباعة، وبدون ظهور الدومين أو التاريخ أسفل الورقة.</div>
       </section>
       <section class="card full">
         <div class="section-title"><h3>نماذج التصاميم المتاحة</h3><span class="pill">4 تصاميم احترافية</span></div>
@@ -301,7 +301,7 @@ function create(){
           <button class="btn blue" onclick="exportWord()">Word</button>
           <button class="btn ghost" onclick="syncDraftFromForm(); renderPreviewOnly()">تحديث المعاينة</button>
         </div>
-        <p class="small">لأفضل PDF: من نافذة الطباعة اختر Save as PDF وألغِ Headers and footers.</p>
+        <p class="small">PDF مباشر: يتم تنزيل الملف بدون دومين المتصفح أو التاريخ، وبعدها يرجع البرنامج للرئيسية.</p>
       </section>
     </div>`);
   bindCreateEvents();
@@ -571,6 +571,129 @@ function summaryBox(title, value, icon){
   return `<div class="summary-box"><div><h3>${title}</h3><strong>${value || '<span class="empty-amount">لا توجد عملة مفعّلة</span>'}</strong></div><div class="summary-icon">${icon}</div></div>`;
 }
 
+
+const PDF_LIB_SOURCES = [
+  'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js',
+  'https://unpkg.com/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js',
+  'https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js'
+];
+let pdfLibPromise = null;
+
+function showBusy(message='جاري تجهيز الملف...'){
+  let el = document.getElementById('busyOverlay');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'busyOverlay';
+    el.className = 'busy-overlay no-print';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `<div class="busy-box"><div class="busy-spinner"></div><b>${esc(message)}</b><span>يرجى الانتظار قليلاً</span></div>`;
+  el.classList.add('show');
+}
+function hideBusy(){
+  const el = document.getElementById('busyOverlay');
+  if(el) el.classList.remove('show');
+}
+function loadScriptOnce(src){
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[data-pdf-lib="${src}"]`);
+    if(existing){
+      if(window.html2pdf) return resolve();
+      existing.addEventListener('load', resolve, {once:true});
+      existing.addEventListener('error', reject, {once:true});
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.defer = true;
+    script.dataset.pdfLib = src;
+    script.referrerPolicy = 'no-referrer';
+    const timer = setTimeout(() => reject(new Error('timeout')), 18000);
+    script.onload = () => { clearTimeout(timer); resolve(); };
+    script.onerror = () => { clearTimeout(timer); reject(new Error('load failed')); };
+    document.head.appendChild(script);
+  });
+}
+function ensurePDFLibrary(){
+  if(window.html2pdf) return Promise.resolve();
+  if(pdfLibPromise) return pdfLibPromise;
+  pdfLibPromise = (async () => {
+    let lastError;
+    for(const src of PDF_LIB_SOURCES){
+      try{
+        await loadScriptOnce(src);
+        if(window.html2pdf) return true;
+      }catch(e){ lastError = e; }
+    }
+    throw lastError || new Error('PDF library unavailable');
+  })();
+  return pdfLibPromise;
+}
+function waitForImages(root){
+  const imgs = Array.from(root.querySelectorAll('img'));
+  if(!imgs.length) return Promise.resolve();
+  return Promise.all(imgs.map(img => new Promise(resolve => {
+    if(img.complete) return resolve();
+    img.onload = resolve;
+    img.onerror = resolve;
+  })));
+}
+function buildPDFElement(d){
+  const old = document.getElementById('pdfExportRoot');
+  if(old) old.remove();
+  const holder = document.createElement('div');
+  holder.id = 'pdfExportRoot';
+  holder.className = 'pdf-export-root';
+  holder.innerHTML = invoiceHTML(d);
+  document.body.appendChild(holder);
+  return holder;
+}
+async function downloadPDFDirect(doc){
+  const d = normalizeDoc(doc);
+  showBusy('جاري إنشاء PDF بدون دومين أو تاريخ...');
+  let holder;
+  try{
+    await ensurePDFLibrary();
+    holder = buildPDFElement(d);
+    await waitForImages(holder);
+    const sheet = holder.querySelector('.invoice-sheet') || holder;
+    const scale = Math.min(2.4, Math.max(1.7, window.devicePixelRatio || 2));
+    const filename = `${safeFileName(d.docNo || d.title || 'invoice')}.pdf`;
+    await window.html2pdf().set({
+      margin: 0,
+      filename,
+      image: { type: 'jpeg', quality: 0.99 },
+      html2canvas: {
+        scale,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        scrollX: 0,
+        scrollY: 0,
+        windowWidth: 794,
+        windowHeight: 1123
+      },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true },
+      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+    }).from(sheet).save();
+
+    if(holder) holder.remove();
+    hideBusy();
+    state.draft = null;
+    state.selected = d;
+    state.view = 'home';
+    render();
+    setTimeout(() => alert('تم تصدير ملف PDF بنجاح ورجعناك للصفحة الرئيسية.'), 120);
+  }catch(e){
+    if(holder) holder.remove();
+    hideBusy();
+    console.error(e);
+    alert('تعذر إنشاء PDF مباشر. تأكد أن الجهاز متصل بالإنترنت ثم جرّب من Chrome بعد رفع الموقع على Vercel.');
+  }
+}
+
 function openPrintInCurrentPage(doc){
   const d = normalizeDoc(doc);
   const previousTitle = document.title;
@@ -623,7 +746,7 @@ function openPrintInCurrentPage(doc){
   });
 }
 
-window.printPDF = function(doc){
+window.printPDF = async function(doc){
   let d;
   if(doc){
     d = normalizeDoc(doc);
@@ -633,9 +756,7 @@ window.printPDF = function(doc){
     d = normalizeDoc(getActiveDoc() || initDraft());
   }
   state.selected = d;
-
-  // حل نهائي للهاتف: لا نستخدم window.open حتى لا تظهر الشاشة البيضاء داخل التطبيق.
-  openPrintInCurrentPage(d);
+  await downloadPDFDirect(d);
 };
 
 window.exportWord = function(id){
